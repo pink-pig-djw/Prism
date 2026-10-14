@@ -19,10 +19,11 @@ module.exports = {
   files: ["**/*"],
   asar: true,
   npmRebuild: false,
-  publish: null,
   win: {
     target: [{ target: "nsis", arch: ["x64"] }],
     artifactName: "Prism-${version}-windows-${arch}-setup.${ext}",
+    // 自动更新：生成 latest.yml，应用从这个仓库的 GitHub Releases 检查新版本
+    publish: { provider: "github", owner: "pink-pig-djw", repo: "Prism", releaseType: "release" },
   },
   nsis: {
     oneClick: false,

@@ -32,6 +32,13 @@
 - 正式版本：仓库的 [Releases](https://github.com/pink-pig-djw/Prism/releases) 页面（推送 `v` 开头的标签时自动发布）；
 - 最新构建：仓库的 [Actions → 构建应用](https://github.com/pink-pig-djw/Prism/actions/workflows/build-apps.yml)，打开最近一次成功的运行，在页面底部的 Artifacts 中下载（需登录 GitHub，文件是 zip 压缩包）。
 
+### 自动更新
+
+- **Windows**：打开 Prism 后会自动到 GitHub Releases 检查新版本（之后每 6 小时检查一次），在后台下载好之后询问是否重启更新；选择「稍后」则在下次退出时自动安装。聊天记录和设置都会保留。
+- macOS / Linux / 安卓暂时需要手动下载新版本覆盖安装。
+
+发布新版本：推送一个 `v` 开头的标签（例如 `git tag v0.2.0 && git push origin v0.2.0`），GitHub Actions 会用标签作为版本号构建并发布到 Releases，已安装的 Windows 版就会收到更新。注意自动更新只认 Releases 里的正式版本，Actions 页面下载的测试包不会触发更新；另外需要能访问 github.com。
+
 > 安装包没有购买 Windows / Apple 的商业签名证书，所以首次打开时系统会提示风险，按上表操作即可。
 
 桌面版和安卓版都**不需要服务器**：打开后在「设置 → 模型服务」里填入 API Key 就能聊天，数据只保存在本机。

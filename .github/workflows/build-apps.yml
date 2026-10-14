@@ -58,6 +58,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # 发布正式版本（推送 v 开头的标签）时，用标签作为版本号，自动更新靠它判断新旧
+      - name: 设置版本号
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
       - run: npm run build:desktop
       - name: 打包安装包
         run: node scripts/dist-desktop.mjs ${{ matrix.args }}
@@ -66,8 +71,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: Prism-${{ matrix.name }}
+          # latest.yml 和 .blockmap 是 Windows 自动更新需要的文件
           path: |
             dist/*.exe
+            dist/*.exe.blockmap
+            dist/latest.yml
             dist/*.dmg
             dist/*.AppImage
             dist/*.deb
@@ -88,6 +96,9 @@ jobs:
           java-version: 21
           cache: gradle
       - run: npm ci
+      - name: 设置版本号
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
       - run: npm run build:android
       # 在仓库 Settings → Secrets 中配置 ANDROID_KEYSTORE_BASE64 等变量后，会用你自己的证书签名；
       # 否则使用临时的调试证书签名（同样可以安装，但覆盖升级时需要先卸载旧版）

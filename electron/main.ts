@@ -7,6 +7,7 @@ import { app, BrowserWindow, Menu, nativeTheme, protocol, shell } from "electron
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { routeApi } from "../lib/api/core";
+import { setupAutoUpdate } from "./updater";
 
 const SCHEME = "app";
 const ORIGIN = `${SCHEME}://prism`;
@@ -115,6 +116,7 @@ if (!app.requestSingleInstanceLock()) {
       return serveStatic(url);
     });
     createWindow();
+    setupAutoUpdate();
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
