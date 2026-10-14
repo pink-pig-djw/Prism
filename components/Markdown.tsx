@@ -5,6 +5,7 @@ import { memo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
+import { TARGET } from "@/lib/platform";
 import { cn, copyText } from "@/lib/utils";
 
 function CodeBlock({ children, language }: { children: ReactNode; language: string }) {
@@ -53,7 +54,8 @@ const components: Components = {
   },
   a({ children, href }) {
     return (
-      <a href={href} target="_blank" rel="noopener noreferrer">
+      // 安卓版里 target=_blank 不会打开新窗口；直接跳转时 Capacitor 会用系统浏览器打开外部链接
+      <a href={href} target={TARGET === "mobile" ? undefined : "_blank"} rel="noopener noreferrer">
         {children}
       </a>
     );

@@ -7,6 +7,7 @@ export const metadata: Metadata = {
   applicationName: "Prism",
   appleWebApp: { capable: true, title: "Prism", statusBarStyle: "default" },
   icons: { icon: "/icon.svg", apple: "/apple-touch-icon.png" },
+  manifest: "/manifest.webmanifest",
 };
 
 export const viewport: Viewport = {
@@ -14,6 +15,7 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   viewportFit: "cover",
+  interactiveWidget: "resizes-content",
   themeColor: "#ffffff",
 };
 

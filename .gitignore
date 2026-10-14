@@ -6,3 +6,9 @@ next-env.d.ts
 .env*.local
 .env
 .DS_Store
+
+# 桌面 / 安卓打包产物
+/out
+/.next-app
+/build/desktop
+/dist

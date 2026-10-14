@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Prism</string>
+    <string name="title_activity_main">Prism</string>
+    <string name="package_name">app.prism.chat</string>
+    <string name="custom_url_scheme">app.prism.chat</string>
+</resources>

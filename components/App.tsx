@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect } from "react";
+import { installLocalApi } from "@/lib/native/local-api";
+import { TARGET } from "@/lib/platform";
 import { useStore } from "@/lib/store";
 import type { ServerConfig } from "@/lib/types";
 import { ChatView } from "./ChatView";
@@ -9,6 +11,9 @@ import { GptExplore } from "./GptExplore";
 import { ConfirmDialog, SearchDialog, Toaster } from "./Overlays";
 import { SettingsDialog } from "./SettingsDialog";
 import { Sidebar } from "./Sidebar";
+
+// 安卓版没有服务端，/api 请求在 WebView 内处理；必须在任何请求发出之前安装
+if (TARGET === "mobile" && typeof window !== "undefined") installLocalApi();
 
 function useTheme() {
   const theme = useStore((s) => s.settings.theme);
@@ -57,14 +62,15 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
 
-    if ("serviceWorker" in navigator && process.env.NODE_ENV === "production") {
+    if (TARGET === "web" && "serviceWorker" in navigator && process.env.NODE_ENV === "production") {
       navigator.serviceWorker.register("/sw.js").catch(() => {});
     }
+    if (TARGET === "mobile") void import("@/lib/native/mobile").then((m) => m.setupMobileShell());
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-main pb-[env(safe-area-inset-bottom)] text-fg">
+    <div className="flex h-dvh overflow-hidden bg-main pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] text-fg">
       <Sidebar />
       <main className="relative min-w-0 flex-1">{view === "gpts" ? <GptExplore /> : <ChatView />}</main>
       <SettingsDialog />

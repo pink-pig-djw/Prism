@@ -1,8 +1,9 @@
-import { getServerConfig } from "@/lib/server";
+import { handleConfig } from "@/lib/api/core";
+import { serverEnv } from "@/lib/api/server-env";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export function GET() {
-  return Response.json(getServerConfig());
+  return handleConfig(serverEnv());
 }

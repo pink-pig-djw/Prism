@@ -6,6 +6,7 @@ import { fetchModels } from "@/lib/chat";
 import { DEFAULT_MODELS } from "@/lib/defaults";
 import { useStore, type SettingsTab } from "@/lib/store";
 import type { ProviderId } from "@/lib/types";
+import { TARGET } from "@/lib/platform";
 import { cn, downloadFile, prettyModel, PROVIDER_LABEL } from "@/lib/utils";
 import { Button, Dialog, Field, inputClass, Switch } from "./ui";
 
@@ -251,7 +252,9 @@ function Models() {
   return (
     <div className="space-y-4 py-4">
       <p className="rounded-xl bg-soft px-3.5 py-2.5 text-xs leading-relaxed text-muted">
-        🔒 API Key 只保存在当前浏览器本地，发送消息时经由本应用的服务端转发给模型服务商，不会保存在服务器上。
+        {TARGET === "web"
+          ? "🔒 API Key 只保存在当前浏览器本地，发送消息时经由本应用的服务端转发给模型服务商，不会保存在服务器上。"
+          : "🔒 API Key 只保存在这台设备上，只会发送给你填写的模型服务商。"}
       </p>
       {accessCodeRequired && (
         <Field label="访问密码" hint="管理员为服务器上的 API Key 设置了访问密码。使用你自己的 Key 时无需填写。">
@@ -314,7 +317,17 @@ function Data() {
           size="sm"
           onClick={() => {
             const data = { app: "prism", version: 1, exportedAt: new Date().toISOString(), conversations: Object.values(conversations), gpts };
-            downloadFile(`prism-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(data, null, 2));
+            const name = `prism-${new Date().toISOString().slice(0, 10)}.json`;
+            const json = JSON.stringify(data, null, 2);
+            if (TARGET === "mobile") {
+              // WebView 不支持浏览器下载，改为写入手机的「文档」目录
+              import("@/lib/native/mobile")
+                .then((m) => m.saveToDocuments(name, json))
+                .then((path) => toast(`已保存到 ${path}`))
+                .catch((err) => toast(`导出失败：${err instanceof Error ? err.message : String(err)}`, "error"));
+            } else {
+              downloadFile(name, json);
+            }
           }}
         >
           <Download size={14} />
