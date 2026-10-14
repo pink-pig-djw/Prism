@@ -9,6 +9,5 @@ next-env.d.ts
 
 # 桌面 / 安卓打包产物
 /out
-/.next-app
 /build/desktop
 /dist

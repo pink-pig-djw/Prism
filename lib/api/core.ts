@@ -6,7 +6,7 @@
  */
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import type { ChatRequestBody, ProviderId, ServerConfig, StreamEvent } from "../types";
+import type { ChatMessagePayload, ChatRequestBody, ProviderId, ServerConfig, StreamEvent } from "../types";
 
 export const DEFAULT_BASE_URL: Record<ProviderId, string> = {
   openai: "https://api.openai.com/v1",
@@ -14,6 +14,10 @@ export const DEFAULT_BASE_URL: Record<ProviderId, string> = {
 };
 
 const DEFAULT_MAX_TOKENS = 32000;
+
+/** 一次请求里附件（图片 + 文件）的总大小上限，略低于 Anthropic 的 32MB 请求上限 */
+const MAX_ATTACHMENT_CHARS = 30 * 1024 * 1024;
+const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
 /** 这些模型在 Anthropic 官方接口上支持服务端拒答降级（fallbacks: "default"） */
 const FALLBACK_MODELS = new Set(["claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"]);
@@ -145,7 +149,7 @@ async function openOpenAI(body: ChatRequestBody, creds: Credentials, env: ApiEnv
   const client = new OpenAI(sdkOptions(creds, env));
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
   if (body.system) messages.push({ role: "system", content: body.system });
-  for (const m of body.messages) messages.push({ role: m.role, content: m.content });
+  for (const m of body.messages) messages.push(toOpenAIMessage(m));
 
   const stream = await client.chat.completions.create({ model: body.model, messages, stream: true }, { signal });
 
@@ -165,6 +169,50 @@ async function openOpenAI(body: ChatRequestBody, creds: Credentials, env: ApiEnv
   };
 }
 
+/** 文件统一转成文字放进消息里，这样不支持文件输入的模型（DeepSeek、通义千问等）也能读取 */
+function filesAsText(m: ChatMessagePayload): string {
+  return (m.files ?? [])
+    .map((f) => {
+      const text = f.text.trim() || "（这个文件没有可提取的文字，可能是扫描件或纯图片）";
+      return `<file name="${f.name.replace(/"/g, "'")}">\n${text}\n</file>`;
+    })
+    .join("\n\n");
+}
+
+function toOpenAIMessage(m: ChatMessagePayload): OpenAI.Chat.ChatCompletionMessageParam {
+  if (m.role === "assistant") return { role: "assistant", content: m.content };
+  const text = [filesAsText(m), m.content].filter((s) => s.trim()).join("\n\n");
+  // 没有图片时用纯文本，兼容只支持字符串 content 的服务商
+  if (!m.images?.length) return { role: "user", content: text };
+  const parts: OpenAI.Chat.ChatCompletionContentPart[] = [];
+  if (text) parts.push({ type: "text", text });
+  for (const img of m.images) parts.push({ type: "image_url", image_url: { url: `data:${img.mimeType};base64,${img.data}` } });
+  return { role: "user", content: parts };
+}
+
+type AnthropicContent = Anthropic.Beta.Messages.BetaContentBlockParam[];
+
+function toAnthropicMessage(m: ChatMessagePayload): Anthropic.Beta.Messages.BetaMessageParam {
+  if (m.role === "assistant" || (!m.images?.length && !m.files?.length)) return { role: m.role, content: m.content };
+  // 按官方建议，文档和图片放在文字前面
+  const blocks: AnthropicContent = [];
+  for (const f of m.files ?? []) {
+    blocks.push(
+      f.pdf
+        ? { type: "document", title: f.name, source: { type: "base64", media_type: "application/pdf", data: f.pdf } }
+        : { type: "document", title: f.name, source: { type: "text", media_type: "text/plain", data: f.text.trim() || "（空文件）" } },
+    );
+  }
+  for (const img of m.images ?? []) {
+    blocks.push({
+      type: "image",
+      source: { type: "base64", media_type: img.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", data: img.data },
+    });
+  }
+  if (m.content.trim()) blocks.push({ type: "text", text: m.content });
+  return { role: "user", content: blocks };
+}
+
 async function openAnthropic(body: ChatRequestBody, creds: Credentials, env: ApiEnv, signal: AbortSignal) {
   const client = new Anthropic(sdkOptions(creds, env));
   const official = new URL(creds.baseUrl).hostname === "api.anthropic.com";
@@ -176,7 +224,7 @@ async function openAnthropic(body: ChatRequestBody, creds: Credentials, env: Api
       model: body.model,
       max_tokens: body.maxTokens && body.maxTokens > 0 ? Math.floor(body.maxTokens) : DEFAULT_MAX_TOKENS,
       ...(body.system ? { system: body.system } : {}),
-      messages: body.messages.map((m) => ({ role: m.role, content: m.content })),
+      messages: body.messages.map(toAnthropicMessage),
       stream: true,
       ...(fallback ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
     },
@@ -219,10 +267,27 @@ function parseChatBody(raw: unknown): ChatRequestBody {
   if (!body || !isProvider(body.provider)) throw new HttpError(400, "缺少或不支持的 provider");
   if (typeof body.model !== "string" || !body.model.trim()) throw new HttpError(400, "请先选择一个模型");
   if (!Array.isArray(body.messages) || body.messages.length === 0) throw new HttpError(400, "消息不能为空");
+  let attachmentChars = 0;
   for (const m of body.messages) {
     if ((m?.role !== "user" && m?.role !== "assistant") || typeof m.content !== "string") {
       throw new HttpError(400, "消息格式不正确");
     }
+    if ((m.images !== undefined && !Array.isArray(m.images)) || (m.files !== undefined && !Array.isArray(m.files))) {
+      throw new HttpError(400, "附件格式不正确");
+    }
+    for (const img of m.images ?? []) {
+      if (!IMAGE_TYPES.has(img?.mimeType) || typeof img.data !== "string") throw new HttpError(400, "不支持的图片格式");
+      attachmentChars += img.data.length;
+    }
+    for (const f of m.files ?? []) {
+      if (typeof f?.name !== "string" || typeof f.text !== "string" || (f.pdf !== undefined && typeof f.pdf !== "string")) {
+        throw new HttpError(400, "文件格式不正确");
+      }
+      attachmentChars += f.text.length + (f.pdf?.length ?? 0);
+    }
+  }
+  if (attachmentChars > MAX_ATTACHMENT_CHARS) {
+    throw new HttpError(413, "这次对话里的图片和文件总共太大了（超过约 30MB），请新开一个对话或减少附件。");
   }
   return {
     provider: body.provider,

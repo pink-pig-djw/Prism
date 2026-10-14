@@ -12,7 +12,8 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   agentRules: false,
   env: { NEXT_PUBLIC_PRISM_TARGET: target },
-  ...(isApp ? { output: "export", pageExtensions: ["tsx"], distDir: ".next-app", images: { unoptimized: true } } : {}),
+  // 静态导出的文件输出到 out/。注意构建过程仍使用 .next 目录，会覆盖网页版的构建结果
+  ...(isApp ? { output: "export", pageExtensions: ["tsx"], images: { unoptimized: true } } : {}),
 };
 
 export default nextConfig;

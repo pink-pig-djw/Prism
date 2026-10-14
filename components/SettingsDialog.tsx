@@ -2,9 +2,10 @@
 
 import { Check, Database, Download, Eye, EyeOff, Loader2, Plug, RefreshCw, Settings2, Trash2, Upload, UserRound, X } from "lucide-react";
 import { useRef, useState } from "react";
+import { exportAttachments, importAttachments } from "@/lib/attachments";
 import { fetchModels } from "@/lib/chat";
 import { DEFAULT_MODELS } from "@/lib/defaults";
-import { useStore, type SettingsTab } from "@/lib/store";
+import { attachmentIds, useStore, type SettingsTab } from "@/lib/store";
 import type { ProviderId } from "@/lib/types";
 import { TARGET } from "@/lib/platform";
 import { cn, downloadFile, prettyModel, PROVIDER_LABEL } from "@/lib/utils";
@@ -312,11 +313,14 @@ function Data() {
 
   return (
     <div>
-      <Row title="导出数据" desc={`把 ${count} 个聊天和 ${gpts.length} 个 GPT 导出为 JSON 文件（不包含 API Key）。`}>
+      <Row title="导出数据" desc={`把 ${count} 个聊天和 ${gpts.length} 个 GPT 导出为 JSON 文件（包含图片和文件，不包含 API Key）。`}>
         <Button
           size="sm"
-          onClick={() => {
-            const data = { app: "prism", version: 1, exportedAt: new Date().toISOString(), conversations: Object.values(conversations), gpts };
+          onClick={async () => {
+            const list = Object.values(conversations);
+            // 图片和文件存放在 IndexedDB 中，导出时一并打包
+            const attachments = await exportAttachments(attachmentIds(list));
+            const data = { app: "prism", version: 1, exportedAt: new Date().toISOString(), conversations: list, gpts, attachments };
             const name = `prism-${new Date().toISOString().slice(0, 10)}.json`;
             const json = JSON.stringify(data, null, 2);
             if (TARGET === "mobile") {
@@ -346,7 +350,9 @@ function Data() {
               e.target.value = "";
               if (!file) return;
               try {
-                const n = importData(JSON.parse(await file.text()));
+                const data = JSON.parse(await file.text());
+                if (data?.attachments && typeof data.attachments === "object") await importAttachments(data.attachments);
+                const n = importData(data);
                 toast(`已导入 ${n} 个聊天`);
               } catch {
                 toast("文件格式不正确", "error");

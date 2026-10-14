@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDown, Code2, GraduationCap, KeyRound, Lightbulb, Menu as MenuIcon, PanelLeft, PenLine, SquarePen } from "lucide-react";
+import { ArrowDown, Code2, GraduationCap, ImagePlus, KeyRound, Lightbulb, Menu as MenuIcon, PanelLeft, PenLine, SquarePen } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { sendMessage, stopGeneration } from "@/lib/chat";
 import { providerReady, useStore } from "@/lib/store";
@@ -194,14 +194,51 @@ export function ChatView() {
       ref={composerRef}
       autoFocus
       streaming={streaming}
-      onSend={(text) => void sendMessage(text)}
+      onSend={(text, attachments) => void sendMessage(text, attachments)}
       onStop={() => activeId && stopGeneration(activeId)}
       placeholder={(convGpt ?? draftGpt) ? `给“${(convGpt ?? draftGpt)!.name}”发送消息` : "询问任何问题"}
     />
   );
 
+  // 把图片或文件拖进窗口时，交给输入框作为附件
+  const [dragging, setDragging] = useState(false);
+  const dragDepth = useRef(0);
+  const hasFiles = (e: React.DragEvent) => Array.from(e.dataTransfer.types).includes("Files");
+  const dropHandlers = {
+    onDragEnter: (e: React.DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragDepth.current++;
+      setDragging(true);
+    },
+    onDragOver: (e: React.DragEvent) => {
+      if (hasFiles(e)) e.preventDefault();
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      if (!hasFiles(e)) return;
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (dragDepth.current === 0) setDragging(false);
+    },
+    onDrop: (e: React.DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragDepth.current = 0;
+      setDragging(false);
+      composerRef.current?.addFiles(Array.from(e.dataTransfer.files));
+    },
+  };
+
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="relative flex h-full min-h-0 flex-col" {...dropHandlers}>
+      {dragging && (
+        <div className="pointer-events-none absolute inset-3 z-30 flex animate-fade-in flex-col items-center justify-center gap-3 rounded-3xl border-2 border-dashed border-[#3b82f6]/60 bg-main/85 backdrop-blur-sm">
+          <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[#3b82f6]/12 text-[#3b82f6]">
+            <ImagePlus size={26} />
+          </span>
+          <p className="text-lg font-medium">拖放到这里添加附件</p>
+          <p className="text-sm text-muted">支持图片、PDF、Word、文本和代码文件</p>
+        </div>
+      )}
       <Header />
       {!conv || messages.length === 0 ? (
         <>

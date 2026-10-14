@@ -5,6 +5,10 @@
 ## 功能
 
 - 💬 **流式对话**：逐字输出，可随时停止；支持 Markdown、表格、代码高亮与一键复制
+- 🖼️ **看图和读文件**：点 📎、粘贴截图或直接拖进窗口，即可发送图片（JPG / PNG / WebP / GIF）、PDF、Word（.docx）、文本和代码文件
+  - Claude 直接阅读 PDF 原文（包括图表和排版）；OpenAI 兼容接口会先在本地提取 PDF 文字再发送，所以不支持文件输入的模型也能用
+  - 大图会自动压缩到长边 1568px；GBK 编码的中文文本文件也能正确识别
+  - 看图需要模型本身支持识图（例如 Claude、GPT-5.5、通义千问 VL）；纯文本模型（例如 deepseek-chat）可以读文件但不能看图
 - 🧠 **思考过程**：DeepSeek / 通义千问等推理模型的思考内容可折叠查看
 - ✏️ **编辑与重新生成**：修改已发送的问题重新提问，或重新生成最后一条回答
 - 🗂️ **会话管理**：按时间分组的历史记录、自动生成标题、重命名、置顶、删除、全文搜索（Ctrl/⌘ + K）
@@ -85,6 +89,8 @@ npm run dist:desktop       # 打包当前系统的桌面安装包，输出到 di
 npm run build:android      # 生成安卓工程所需的文件，然后用 Android Studio 打开 android/ 目录构建
 ```
 
+桌面版 / 安卓版的构建同样使用 `.next` 目录，会覆盖网页版的构建结果，之后想运行网页版请重新执行 `npm run build`。
+
 Windows 安装包需要在 Windows 上打包，macOS 安装包需要在 Mac 上打包。推送代码后 GitHub Actions 会在三个系统上自动完成，见 `.github/workflows/build-apps.yml`。
 
 ### 安卓签名证书（可选）
@@ -107,6 +113,12 @@ base64 -w0 prism.jks   # macOS 上用 base64 -i prism.jks
   - 安卓版：直接运行在 WebView 里（`lib/native/local-api.ts` 拦截 `/api` 请求）
 - Claude Opus 5.5 / Sonnet 5.5 等模型在官方接口上开启了服务端降级（`fallbacks: "default"`）：请求被安全策略拒绝时会自动换用其他模型重试
 
+### 附件相关的限制
+
+- 图片和文件保存在本机的 IndexedDB 里（聊天记录本身在 localStorage），导出数据时会一并打包；
+- 为了让模型记得前面发过的图片和文件，每次提问都会带上本对话里的全部附件。单次请求的附件总量上限约 30MB，超过时请新开一个对话；
+- 部署在 Vercel 上时，平台限制单次请求不能超过 4.5MB，附件多的对话可能会失败；自建服务器、桌面版和安卓版没有这个限制。
+
 ### 安全提示
 
 - 网页端填写的 API Key 只保存在你的浏览器（localStorage）里，每次请求时随请求发给本应用的服务端转发，服务端不做存储
@@ -119,6 +131,7 @@ app/api/                网页版的服务端路由（转发给 lib/api/core.ts�
 components/             界面组件（侧边栏、聊天、输入框、设置、GPT 编辑器…）
 lib/
   api/core.ts           调用 OpenAI / Anthropic 的核心逻辑（三端共用）
+  attachments.ts        图片压缩、PDF / Word / 文本提取、附件本地存储
   native/               安卓版：页面内的 /api 处理、返回键、导出文件
   chat.ts               前端发送、停止、编辑、重新生成、自动标题
   store.ts              全局状态与本地持久化

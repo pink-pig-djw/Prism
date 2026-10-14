@@ -6,6 +6,7 @@ import { editMessage, regenerate } from "@/lib/chat";
 import { useStore } from "@/lib/store";
 import type { Message } from "@/lib/types";
 import { cn, copyText, prettyModel } from "@/lib/utils";
+import { MessageAttachments } from "./Attachments";
 import { Markdown } from "./Markdown";
 import { Button } from "./ui";
 
@@ -82,40 +83,46 @@ function UserMessage({ message, convId, busy }: { message: Message; convId: stri
     el.style.height = `${Math.min(el.scrollHeight, 360)}px`;
   }, [draft, editing]);
 
+  const hasAttachments = Boolean(message.images?.length || message.files?.length);
+  const canResend = Boolean(draft.trim()) || hasAttachments;
+
   if (editing) {
     return (
-      <div className="w-full animate-fade-in rounded-3xl bg-soft px-4 py-3">
-        <textarea
-          ref={ref}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") setEditing(false);
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              if (draft.trim()) {
+      <div className="flex flex-col items-end">
+        <MessageAttachments images={message.images} files={message.files} />
+        <div className="w-full animate-fade-in rounded-3xl bg-soft px-4 py-3">
+          <textarea
+            ref={ref}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setEditing(false);
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                if (canResend) {
+                  setEditing(false);
+                  void editMessage(convId, message.id, draft);
+                }
+              }
+            }}
+            className="scroll-thin w-full resize-none bg-transparent px-1 leading-7 outline-none"
+          />
+          <div className="mt-2 flex justify-end gap-2">
+            <Button size="sm" variant="secondary" onClick={() => setEditing(false)}>
+              取消
+            </Button>
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={!canResend}
+              onClick={() => {
                 setEditing(false);
                 void editMessage(convId, message.id, draft);
-              }
-            }
-          }}
-          className="scroll-thin w-full resize-none bg-transparent px-1 leading-7 outline-none"
-        />
-        <div className="mt-2 flex justify-end gap-2">
-          <Button size="sm" variant="secondary" onClick={() => setEditing(false)}>
-            取消
-          </Button>
-          <Button
-            size="sm"
-            variant="primary"
-            disabled={!draft.trim()}
-            onClick={() => {
-              setEditing(false);
-              void editMessage(convId, message.id, draft);
-            }}
-          >
-            发送
-          </Button>
+              }}
+            >
+              发送
+            </Button>
+          </div>
         </div>
       </div>
     );
@@ -123,11 +130,14 @@ function UserMessage({ message, convId, busy }: { message: Message; convId: stri
 
   return (
     <div className="group flex flex-col items-end">
-      <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-3xl bg-soft px-5 py-2.5 leading-7 sm:max-w-[75%]">
-        {message.content}
-      </div>
+      <MessageAttachments images={message.images} files={message.files} />
+      {message.content && (
+        <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-3xl bg-soft px-5 py-2.5 leading-7 sm:max-w-[75%]">
+          {message.content}
+        </div>
+      )}
       <div className="mt-1 flex gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 max-md:opacity-100">
-        <CopyButton text={message.content} />
+        {message.content && <CopyButton text={message.content} />}
         {!busy && (
           <ActionButton
             label="编辑"
@@ -168,7 +178,7 @@ function AssistantMessage({ message, convId, isLast, busy }: { message: Message;
         <div className={cn("flex items-start gap-3 rounded-2xl border border-danger/25 bg-danger/[0.06] px-4 py-3 text-sm", message.content && "mt-3")}>
           <AlertCircle size={18} className="mt-0.5 shrink-0 text-danger" />
           <div className="min-w-0 flex-1">
-            <p className="break-words leading-relaxed">{message.error || "出错了，请重试。"}</p>
+            <p className="whitespace-pre-line break-words leading-relaxed">{message.error || "出错了，请重试。"}</p>
             <div className="mt-2.5 flex flex-wrap gap-2">
               {isLast && (
                 <Button size="sm" variant="secondary" onClick={() => void regenerate(convId)}>

@@ -24,13 +24,10 @@ const next = spawnSync(process.execPath, [path.join(root, "node_modules/next/dis
   env: { ...process.env, PRISM_TARGET: target, NEXT_TELEMETRY_DISABLED: "1" },
 });
 if (next.status !== 0) process.exit(next.status ?? 1);
-// next.config.ts 里设置了 distDir: ".next-app"，静态导出的文件就生成在这里
-const exported = path.join(root, ".next-app");
-if (!existsSync(path.join(exported, "index.html"))) {
-  console.error("静态导出失败：没有找到 .next-app/index.html");
+if (!existsSync(path.join(root, "out/index.html"))) {
+  console.error("静态导出失败：没有找到 out/index.html");
   process.exit(1);
 }
-cpSync(exported, path.join(root, "out"), { recursive: true });
 
 if (target === "desktop") {
   // 2. 组装 Electron 应用目录：静态页面 + 打包后的主进程 + 精简的 package.json

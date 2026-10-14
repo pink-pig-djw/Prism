@@ -2,6 +2,7 @@
 
 import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
+import { clearAttachments, deleteAttachments } from "./attachments";
 import { DEFAULT_SETTINGS, PRESET_GPTS } from "./defaults";
 import type { Conversation, GPT, Message, ModelRef, ProviderId, ServerConfig, Settings } from "./types";
 import { uid } from "./utils";
@@ -167,11 +168,15 @@ export const useStore = create<State>()(
 
       deleteConversation: (id) =>
         set((s) => {
+          void deleteAttachments(attachmentIds([s.conversations[id]].filter(Boolean)));
           const { [id]: _removed, ...rest } = s.conversations;
           return { conversations: rest, activeId: s.activeId === id ? null : s.activeId };
         }),
 
-      clearConversations: () => set({ conversations: {}, activeId: null }),
+      clearConversations: () => {
+        void clearAttachments();
+        set({ conversations: {}, activeId: null });
+      },
 
       importData: (data) => {
         let count = 0;
@@ -287,6 +292,11 @@ export const useStore = create<State>()(
     },
   ),
 );
+
+/** 对话中所有附件（图片、文件）的 id */
+export function attachmentIds(conversations: Pick<Conversation, "messages">[]): string[] {
+  return conversations.flatMap((c) => c.messages.flatMap((m) => [...(m.images ?? []), ...(m.files ?? [])].map((a) => a.id)));
+}
 
 /** 某个服务商是否可用：浏览器里填了 Key，或者服务器配置了 Key */
 export function providerReady(provider: ProviderId, settings: Settings, server: ServerConfig | null) {

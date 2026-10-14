@@ -1,8 +1,14 @@
 "use client";
 
-import { useStore } from "./store";
-import type { ChatRequestBody, GPT, Message, ProviderId, Role, Settings, StreamEvent } from "./types";
+import { deleteAttachments, loadPayloads, saveAttachments, type PreparedFile, type PreparedImage } from "./attachments";
+import { attachmentIds, useStore } from "./store";
+import type { ChatMessagePayload, ChatRequestBody, GPT, Message, ProviderId, Settings, StreamEvent } from "./types";
 import { uid } from "./utils";
+
+export interface Attachments {
+  images: PreparedImage[];
+  files: PreparedFile[];
+}
 
 /** 每个对话当前正在进行的请求，用于「停止生成」 */
 const controllers = new Map<string, AbortController>();
@@ -66,19 +72,36 @@ async function streamChat(body: ChatRequestBody, signal: AbortSignal, onEvent: (
   if (!finished && !signal.aborted) throw new Error("连接意外中断，回答可能不完整。");
 }
 
-/** 把界面上的消息整理成模型接口需要的格式：跳过失败/空消息，合并相邻的同角色消息 */
-function buildHistory(messages: Message[]): { role: Role; content: string }[] {
-  const out: { role: Role; content: string }[] = [];
+function hasAttachments(m: Message) {
+  return Boolean(m.images?.length || m.files?.length);
+}
+
+/** 把界面上的消息整理成模型接口需要的格式：跳过失败/空消息，合并相邻的同角色消息，读出附件数据 */
+async function buildHistory(messages: Message[]): Promise<ChatMessagePayload[]> {
+  const out: ChatMessagePayload[] = [];
   for (const m of messages) {
     if (m.status === "error" || m.status === "streaming") continue;
     const content = m.content.trim();
-    if (!content) continue;
+    const { images, files } = m.role === "user" ? await loadPayloads(m.images, m.files) : { images: [], files: [] };
+    if (!content && !images.length && !files.length) continue;
     const last = out[out.length - 1];
-    if (last && last.role === m.role) last.content += `\n\n${content}`;
-    else out.push({ role: m.role, content });
+    if (last && last.role === m.role) {
+      last.content = [last.content, content].filter(Boolean).join("\n\n");
+      if (images.length) last.images = [...(last.images ?? []), ...images];
+      if (files.length) last.files = [...(last.files ?? []), ...files];
+    } else {
+      out.push({ role: m.role, content, ...(images.length ? { images } : {}), ...(files.length ? { files } : {}) });
+    }
   }
   while (out.length && out[0].role !== "user") out.shift();
   return out;
+}
+
+/** 只有附件、没有文字时，用附件名作为对话标题和标题生成的素材 */
+function describeAttachments(m: Pick<Message, "images" | "files">) {
+  const names = (m.files ?? []).map((f) => f.name);
+  if (m.images?.length) names.push(m.images.length > 1 ? `${m.images.length} 张图片` : "图片");
+  return names.join("、");
 }
 
 function buildSystem(gpt: GPT | undefined, settings: Settings): string {
@@ -95,21 +118,32 @@ function buildSystem(gpt: GPT | undefined, settings: Settings): string {
   return parts.join("\n\n");
 }
 
-export async function sendMessage(text: string) {
+export async function sendMessage(text: string, attachments: Attachments = { images: [], files: [] }) {
   const content = text.trim();
-  if (!content) return;
+  const { images, files } = attachments;
+  if (!content && !images.length && !files.length) return;
   const s = useStore.getState();
   let convId = s.activeId && s.conversations[s.activeId] ? s.activeId : null;
   if (convId && s.streaming[convId]) return;
+
+  const userMessage: Message = { id: uid(), role: "user", content, createdAt: Date.now() };
+  if (images.length) userMessage.images = images.map(({ id, mimeType, width, height }) => ({ id, mimeType, width, height }));
+  if (files.length) userMessage.files = files.map(({ text: _text, pdf: _pdf, ...ref }) => ref);
+  try {
+    await saveAttachments(images, files);
+  } catch {
+    s.toast("保存附件失败，可能是设备存储空间不足", "error");
+    return;
+  }
+
   if (!convId) {
     const gpt = s.draftGptId ? s.gpts.find((g) => g.id === s.draftGptId) : undefined;
     convId = s.createConversation({
       model: gpt?.model ?? s.settings.defaultModel,
       gptId: gpt?.id,
-      title: content.replace(/\s+/g, " ").slice(0, 40),
+      title: (content || describeAttachments(userMessage)).replace(/\s+/g, " ").slice(0, 40),
     });
   }
-  const userMessage: Message = { id: uid(), role: "user", content, createdAt: Date.now() };
   s.setMessages(convId, (msgs) => [...msgs, userMessage]);
   await generate(convId);
 }
@@ -130,16 +164,24 @@ export async function regenerate(convId: string) {
   await generate(convId);
 }
 
-/** 编辑某条用户消息：丢弃它之后的所有内容，用新内容重新提问 */
+/** 编辑某条用户消息：保留它的附件，丢弃它之后的所有内容，用新内容重新提问 */
 export async function editMessage(convId: string, msgId: string, text: string) {
   const content = text.trim();
-  if (!content) return;
   const s = useStore.getState();
+  const original = s.conversations[convId]?.messages.find((m) => m.id === msgId);
+  if (!content && !(original && hasAttachments(original))) return;
   stopGeneration(convId);
   s.setMessages(convId, (msgs) => {
     const idx = msgs.findIndex((m) => m.id === msgId);
     const kept = idx >= 0 ? msgs.slice(0, idx) : msgs;
-    return [...kept, { id: uid(), role: "user", content, createdAt: Date.now() }];
+    const edited: Message = { id: uid(), role: "user", content, createdAt: Date.now() };
+    if (original?.images?.length) edited.images = original.images;
+    if (original?.files?.length) edited.files = original.files;
+    // 被丢弃的后续消息里的附件不再需要，从本地存储中删除
+    const keep = new Set(attachmentIds([{ messages: [edited] }]));
+    const dropped = attachmentIds([{ messages: idx >= 0 ? msgs.slice(idx) : [] }]).filter((id) => !keep.has(id));
+    void deleteAttachments(dropped);
+    return [...kept, edited];
   });
   await generate(convId);
 }
@@ -150,8 +192,9 @@ async function generate(convId: string) {
   if (!conv) return;
   const gpt = conv.gptId ? s.gpts.find((g) => g.id === conv.gptId) : undefined;
   const { provider, model } = conv.model;
-  const history = buildHistory(conv.messages);
+  const history = await buildHistory(conv.messages);
   if (!history.length) return;
+  const withImages = history.some((m) => m.images?.length);
 
   const assistant: Message = {
     id: uid(),
@@ -196,11 +239,16 @@ async function generate(convId: string) {
   } catch (err) {
     if (!controller.signal.aborted) {
       if (timer) clearTimeout(timer);
+      let error = err instanceof Error ? err.message : String(err);
+      // 不支持识图的模型收到图片时通常只返回一个笼统的参数错误，补充一句提示
+      if (withImages && !/API Key|访问密码|网络|连接/.test(error)) {
+        error += "\n\n提示：如果当前模型不支持图片，请换一个支持识图的模型（例如 Claude、GPT-5.5、通义千问 VL）。";
+      }
       useStore.getState().patchMessage(convId, assistant.id, {
         content,
         reasoning: reasoning || undefined,
         status: "error",
-        error: err instanceof Error ? err.message : String(err),
+        error,
       });
     }
   } finally {
@@ -229,7 +277,10 @@ async function generateTitle(convId: string) {
   const s = useStore.getState();
   const conv = s.conversations[convId];
   if (!conv) return;
-  const question = conv.messages.find((m) => m.role === "user")?.content ?? "";
+  const first = conv.messages.find((m) => m.role === "user");
+  const question = [first?.content ?? "", first && hasAttachments(first) ? `（附件：${describeAttachments(first)}）` : ""]
+    .filter(Boolean)
+    .join("\n");
   const answer = conv.messages.find((m) => m.role === "assistant" && m.status === "done")?.content ?? "";
   s.updateConversation(convId, { titled: true });
 
