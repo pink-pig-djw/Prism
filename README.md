@@ -40,7 +40,12 @@
 - **Windows**：打开 Prism 后会自动到 GitHub Releases 检查新版本（之后每 6 小时检查一次），在后台下载好之后询问是否重启更新；选择「稍后」则在下次退出时自动安装。聊天记录和设置都会保留。
 - macOS / Linux / 安卓暂时需要手动下载新版本覆盖安装。
 
-发布新版本：推送一个 `v` 开头的标签（例如 `git tag v0.2.0 && git push origin v0.2.0`），GitHub Actions 会用标签作为版本号构建并发布到 Releases，已安装的 Windows 版就会收到更新。注意自动更新只认 Releases 里的正式版本，Actions 页面下载的测试包不会触发更新；另外需要能访问 github.com。
+发布新版本（二选一）：
+
+- 在仓库的 **Actions → 构建应用 → Run workflow** 里填写版本号（例如 `0.2.0`）后运行，流程会自动创建标签并发布；
+- 或者推送一个 `v` 开头的标签：`git tag v0.2.0 && git push origin v0.2.0`。
+
+GitHub Actions 会用这个版本号构建全部安装包并发布到 Releases，已安装的 Windows 版就会收到更新。版本号要比上一次大。注意自动更新只认 Releases 里的正式版本，Actions 页面下载的测试包不会触发更新；另外需要能访问 github.com。
 
 > 安装包没有购买 Windows / Apple 的商业签名证书，所以首次打开时系统会提示风险，按上表操作即可。
 
