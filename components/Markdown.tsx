@@ -6,6 +6,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 import { TARGET } from "@/lib/platform";
+import type { Source } from "@/lib/types";
 import { cn, copyText } from "@/lib/utils";
 
 function CodeBlock({ children, language }: { children: ReactNode; language: string }) {
@@ -52,7 +53,15 @@ const components: Components = {
       </div>
     );
   },
-  a({ children, href }) {
+  a({ children, href, title }) {
+    // 联网搜索的来源编号，渲染成小圆角标
+    if (title === "cite") {
+      return (
+        <a href={href} target={TARGET === "mobile" ? undefined : "_blank"} rel="noopener noreferrer" className="cite">
+          {children}
+        </a>
+      );
+    }
     return (
       // 安卓版里 target=_blank 不会打开新窗口；直接跳转时 Capacitor 会用系统浏览器打开外部链接
       <a href={href} target={TARGET === "mobile" ? undefined : "_blank"} rel="noopener noreferrer">
@@ -65,11 +74,35 @@ const components: Components = {
 const remarkPlugins = [remarkGfm];
 const rehypePlugins = [[rehypeHighlight, { detect: false }]] as never;
 
-export const Markdown = memo(function Markdown({ content, streaming }: { content: string; streaming?: boolean }) {
+/** 把正文里的 [1]、[2] 换成指向对应来源的链接（代码块里的不处理） */
+function linkCitations(content: string, sources?: Source[]) {
+  if (!sources?.length) return content;
+  return content
+    .split(/(```[\s\S]*?(?:```|$))/)
+    .map((part, i) =>
+      i % 2 === 1
+        ? part
+        : part.replace(/\[(\d{1,2})\](?![(:\[])/g, (m, n: string) => {
+            const src = sources[Number(n) - 1];
+            return src ? `[${n}](<${src.url}> "cite")` : m;
+          }),
+    )
+    .join("");
+}
+
+export const Markdown = memo(function Markdown({
+  content,
+  streaming,
+  sources,
+}: {
+  content: string;
+  streaming?: boolean;
+  sources?: Source[];
+}) {
   return (
     <div className={cn("md", streaming && "streaming")}>
       <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={components}>
-        {content}
+        {linkCitations(content, sources)}
       </ReactMarkdown>
     </div>
   );

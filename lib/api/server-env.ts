@@ -12,6 +12,14 @@ function list(name: string): string[] {
 export function serverEnv(): ApiEnv {
   return {
     accessCode: process.env.ACCESS_CODE || undefined,
+    searchKeys: {
+      tavily: process.env.TAVILY_API_KEY?.trim() || undefined,
+      bocha: process.env.BOCHA_API_KEY?.trim() || undefined,
+    },
+    searchEndpoints: {
+      tavily: process.env.TAVILY_BASE_URL?.trim() || undefined,
+      bocha: process.env.BOCHA_BASE_URL?.trim() || undefined,
+    },
     serverKeys: {
       openai: {
         apiKey: process.env.OPENAI_API_KEY?.trim(),

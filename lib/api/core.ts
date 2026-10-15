@@ -6,7 +6,8 @@
  */
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import type { ChatMessagePayload, ChatRequestBody, ProviderId, ServerConfig, StreamEvent } from "../types";
+import type { ChatMessagePayload, ChatRequestBody, ProviderId, SearchService, ServerConfig, Source, StreamEvent } from "../types";
+import { formatResults, SEARCH_NAMES, webSearch } from "./search";
 
 export const DEFAULT_BASE_URL: Record<ProviderId, string> = {
   openai: "https://api.openai.com/v1",
@@ -31,7 +32,14 @@ export interface ApiEnv {
   browser?: boolean;
   /** 自定义 fetch，安卓版用它在跨域失败时改走原生网络请求 */
   fetch?: typeof fetch;
+  /** 服务器上预置的搜索服务 Key */
+  searchKeys?: Partial<Record<SearchService, string>>;
+  /** 自定义搜索服务地址（自建代理或测试用） */
+  searchEndpoints?: Partial<Record<SearchService, string>>;
 }
+
+/** 本次请求实际使用的联网搜索方式 */
+type SearchPlan = { mode: "native" } | { mode: "service"; service: SearchService; apiKey: string };
 
 interface Credentials {
   apiKey: string;
@@ -213,42 +221,122 @@ function toAnthropicMessage(m: ChatMessagePayload): Anthropic.Beta.Messages.Beta
   return { role: "user", content: blocks };
 }
 
-async function openAnthropic(body: ChatRequestBody, creds: Credentials, env: ApiEnv, signal: AbortSignal) {
+/** 较新的模型支持带动态过滤的搜索工具，其余模型使用基础版本 */
+function anthropicSearchTool(model: string) {
+  const dynamic = /^claude-(opus-(5|4-[6-9])|sonnet-(5|4-6))(\b|-)/.test(model);
+  return { type: dynamic ? ("web_search_20260209" as const) : ("web_search_20250305" as const), name: "web_search" as const, max_uses: 5 };
+}
+
+const NATIVE_SEARCH_PROMPT =
+  "联网搜索：用户打开了联网搜索。回答前请先使用 web_search 工具搜索最新信息（可以多次搜索不同关键词），再基于搜索结果作答。";
+
+/** pause_turn 时最多续接的次数 */
+const MAX_CONTINUATIONS = 3;
+
+async function openAnthropic(body: ChatRequestBody, creds: Credentials, env: ApiEnv, signal: AbortSignal, nativeSearch = false) {
   const client = new Anthropic(sdkOptions(creds, env));
   const official = new URL(creds.baseUrl).hostname === "api.anthropic.com";
   // 官方接口上为支持的模型开启服务端拒答降级：被安全策略拒绝时自动换模型重试
   const fallback = official && FALLBACK_MODELS.has(body.model);
+  const system = [body.system, nativeSearch ? NATIVE_SEARCH_PROMPT : ""].filter(Boolean).join("\n\n");
+  const messages = body.messages.map(toAnthropicMessage);
 
-  const stream = await client.beta.messages.create(
-    {
-      model: body.model,
-      max_tokens: body.maxTokens && body.maxTokens > 0 ? Math.floor(body.maxTokens) : DEFAULT_MAX_TOKENS,
-      ...(body.system ? { system: body.system } : {}),
-      messages: body.messages.map(toAnthropicMessage),
-      stream: true,
-      ...(fallback ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
-    },
-    { signal },
-  );
+  const open = () => {
+    const stream = client.beta.messages.stream(
+      {
+        model: body.model,
+        max_tokens: body.maxTokens && body.maxTokens > 0 ? Math.floor(body.maxTokens) : DEFAULT_MAX_TOKENS,
+        ...(system ? { system } : {}),
+        messages,
+        ...(nativeSearch ? { tools: [anthropicSearchTool(body.model)] } : {}),
+        ...(fallback ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
+      },
+      { signal },
+    );
+    return { stream, iterator: stream[Symbol.asyncIterator]() };
+  };
+
+  // 先读到第一个事件，鉴权失败、模型不存在等错误就能以 HTTP 状态码返回
+  let current = open();
+  let first = await current.iterator.next();
 
   return async (emit: Emit) => {
+    // 参考来源编号：url → [n]
+    const sourceNums = new Map<string, number>();
+    const addSources = (items: Source[]) => {
+      const fresh = items.filter((it) => it.url && !sourceNums.has(it.url));
+      for (const it of fresh) sourceNums.set(it.url, sourceNums.size + 1);
+      if (fresh.length) emit({ type: "sources", sources: fresh });
+    };
+
     let stopReason: string | null = null;
-    for await (const event of stream) {
-      switch (event.type) {
-        case "content_block_start":
-          // 发生了降级：被拒绝的模型此前输出的部分内容需要丢弃
-          if (event.content_block.type === "fallback") emit({ type: "reset" });
-          break;
-        case "content_block_delta":
-          if (event.delta.type === "text_delta") emit({ type: "text", text: event.delta.text });
-          else if (event.delta.type === "thinking_delta" && event.delta.thinking)
-            emit({ type: "reasoning", text: event.delta.thinking });
-          break;
-        case "message_delta":
-          if (event.delta.stop_reason) stopReason = event.delta.stop_reason;
-          break;
+    for (let round = 0; ; round++) {
+      // 每个内容块的临时状态：搜索关键词的 JSON、正文引用的来源
+      const toolInput = new Map<number, string>();
+      const cited = new Map<number, Set<number>>();
+      let result = first;
+      while (!result.done) {
+        const event = result.value;
+        switch (event.type) {
+          case "content_block_start": {
+            const block = event.content_block;
+            // 发生了降级：被拒绝的模型此前输出的部分内容需要丢弃
+            if (block.type === "fallback") emit({ type: "reset" });
+            else if (block.type === "server_tool_use" && block.name === "web_search") toolInput.set(event.index, "");
+            else if (block.type === "web_search_tool_result" && Array.isArray(block.content)) {
+              addSources(block.content.map((r) => ({ title: r.title || r.url, url: r.url, ...(r.page_age ? { date: r.page_age } : {}) })));
+            }
+            break;
+          }
+          case "content_block_delta": {
+            const delta = event.delta;
+            if (delta.type === "text_delta") emit({ type: "text", text: delta.text });
+            else if (delta.type === "thinking_delta" && delta.thinking) emit({ type: "reasoning", text: delta.thinking });
+            else if (delta.type === "input_json_delta" && toolInput.has(event.index)) {
+              toolInput.set(event.index, toolInput.get(event.index)! + delta.partial_json);
+            } else if (delta.type === "citations_delta" && delta.citation.type === "web_search_result_location") {
+              const { url, title } = delta.citation;
+              if (!sourceNums.has(url)) addSources([{ title: title || url, url }]);
+              if (!cited.has(event.index)) cited.set(event.index, new Set());
+              cited.get(event.index)!.add(sourceNums.get(url)!);
+            }
+            break;
+          }
+          case "content_block_stop": {
+            const json = toolInput.get(event.index);
+            if (json !== undefined) {
+              try {
+                const query = (JSON.parse(json || "{}") as { query?: string }).query;
+                if (query) emit({ type: "search", query });
+              } catch {
+                // 关键词解析失败不影响回答
+              }
+              toolInput.delete(event.index);
+            }
+            // 一段引用了来源的文字结束后，在后面标上来源编号
+            const nums = cited.get(event.index);
+            if (nums?.size) emit({ type: "text", text: [...nums].sort((a, b) => a - b).map((n) => `[${n}]`).join("") });
+            break;
+          }
+          case "message_delta":
+            if (event.delta.stop_reason) stopReason = event.delta.stop_reason;
+            break;
+        }
+        result = await current.iterator.next();
       }
+
+      // 服务端的搜索循环到达上限时会暂停，把已生成的内容原样发回去即可继续
+      if (stopReason === "pause_turn" && round < MAX_CONTINUATIONS) {
+        const paused = await current.stream.finalMessage();
+        messages.push({ role: "assistant", content: paused.content as unknown as AnthropicContent });
+        current = open();
+        first = await current.iterator.next();
+        stopReason = null;
+        continue;
+      }
+      break;
     }
+
     if (stopReason === "refusal") {
       emit({ type: "reset" });
       emit({ type: "error", message: "这个请求被模型的安全策略拒绝了，换个问法再试试吧。" });
@@ -256,6 +344,82 @@ async function openAnthropic(body: ChatRequestBody, creds: Credentials, env: Api
     }
     emit({ type: "done", stopReason });
   };
+}
+
+// ---------------- 通用搜索服务 ----------------
+
+const SERVICE_SEARCH_PROMPT =
+  "联网搜索：用户打开了联网搜索，最新一条消息开头附带了搜索结果（<search_results>）。请优先依据搜索结果回答，" +
+  "在用到某条结果的句子后用 [1]、[2] 这样的编号标注来源（编号与搜索结果一致，不要编造编号）；" +
+  "如果搜索结果与问题无关或不够，请直接说明，并结合自己的知识回答。";
+
+function resolveSearch(body: ChatRequestBody, accessCode: string | null, env: ApiEnv): SearchPlan | null {
+  const ws = body.webSearch;
+  if (!ws) return null;
+  if (ws.mode === "native" && body.provider === "anthropic") return { mode: "native" };
+  const service: SearchService = ws.service === "bocha" ? "bocha" : "tavily";
+  const userKey = ws.apiKey?.trim();
+  if (userKey) return { mode: "service", service, apiKey: userKey };
+  const serverKey = env.searchKeys?.[service];
+  if (!serverKey) {
+    throw new HttpError(400, `联网搜索需要先在「设置 → 联网搜索」中填写${SEARCH_NAMES[service]}的 API Key。`);
+  }
+  if (env.accessCode && !safeEqual(accessCode ?? "", env.accessCode)) {
+    throw new HttpError(401, "访问密码错误，请在「设置 → 模型服务」中填写正确的访问密码。");
+  }
+  return { mode: "service", service, apiKey: serverKey };
+}
+
+/** 有上下文的追问（例如「那明天呢？」）先让模型改写成适合搜索引擎的关键词 */
+async function rewriteQuery(body: ChatRequestBody, creds: Credentials, env: ApiEnv, signal: AbortSignal): Promise<string | null> {
+  const recent = body.messages
+    .slice(-6)
+    .map((m) => `${m.role === "user" ? "用户" : "助手"}：${m.content.slice(0, 500)}`)
+    .join("\n");
+  const prompt = `${recent}\n\n根据以上对话，为用户最后一个问题写一条适合搜索引擎的查询语句（不超过 30 个字），只输出查询语句本身，不要任何解释。`;
+  const timeout = AbortSignal.any([signal, AbortSignal.timeout(20_000)]);
+  let text = "";
+  if (body.provider === "openai") {
+    const res = await new OpenAI(sdkOptions(creds, env)).chat.completions.create(
+      { model: body.model, messages: [{ role: "user", content: prompt }] },
+      { signal: timeout },
+    );
+    text = res.choices?.[0]?.message?.content ?? "";
+  } else {
+    const res = await new Anthropic(sdkOptions(creds, env)).messages.create(
+      { model: body.model, max_tokens: 2000, messages: [{ role: "user", content: prompt }] },
+      { signal: timeout },
+    );
+    text = res.content.map((b) => (b.type === "text" ? b.text : "")).join("");
+  }
+  const query = text.split("\n").map((l) => l.trim()).find(Boolean)?.replace(/^["'“”「」]+|["'“”「」]+$/g, "");
+  return query ? query.slice(0, 200) : null;
+}
+
+/** 先搜索，再把结果放进最后一条用户消息里 */
+async function applyServiceSearch(
+  body: ChatRequestBody,
+  plan: Extract<SearchPlan, { mode: "service" }>,
+  creds: Credentials,
+  env: ApiEnv,
+  signal: AbortSignal,
+  emit: Emit,
+) {
+  const last = body.messages[body.messages.length - 1];
+  if (!last || last.role !== "user" || !last.content.trim()) return;
+  let query = last.content.trim().slice(0, 200);
+  if (body.messages.filter((m) => m.role === "user").length > 1) {
+    query = (await rewriteQuery(body, creds, env, signal).catch(() => null)) ?? query;
+  }
+  emit({ type: "search", query });
+  const hits = await webSearch(plan.service, plan.apiKey, query, {
+    fetch: env.fetch,
+    signal,
+    endpoint: env.searchEndpoints?.[plan.service],
+  });
+  if (hits.length) emit({ type: "sources", sources: hits.map(({ title, url, date }) => ({ title, url, ...(date ? { date } : {}) })) });
+  last.content = `${formatResults(query, hits)}\n\n${last.content}`;
+  body.system = [body.system, SERVICE_SEARCH_PROMPT].filter(Boolean).join("\n\n");
 }
 
 function jsonError(err: HttpError) {
@@ -297,6 +461,14 @@ function parseChatBody(raw: unknown): ChatRequestBody {
     apiKey: typeof body.apiKey === "string" ? body.apiKey : undefined,
     baseUrl: typeof body.baseUrl === "string" ? body.baseUrl : undefined,
     maxTokens: typeof body.maxTokens === "number" ? body.maxTokens : undefined,
+    webSearch:
+      body.webSearch && typeof body.webSearch === "object"
+        ? {
+            mode: body.webSearch.mode === "native" ? "native" : "service",
+            service: body.webSearch.service === "bocha" ? "bocha" : "tavily",
+            apiKey: typeof body.webSearch.apiKey === "string" ? body.webSearch.apiKey : undefined,
+          }
+        : undefined,
   };
 }
 
@@ -304,9 +476,12 @@ function parseChatBody(raw: unknown): ChatRequestBody {
 export async function handleChat(req: Request, env: ApiEnv): Promise<Response> {
   let body: ChatRequestBody;
   let creds: Credentials;
+  let search: SearchPlan | null;
   try {
     body = parseChatBody(await req.json().catch(() => null));
-    creds = resolveCredentials(body.provider, body, req.headers.get("x-access-code"), env);
+    const accessCode = req.headers.get("x-access-code");
+    creds = resolveCredentials(body.provider, body, accessCode, env);
+    search = resolveSearch(body, accessCode, env);
   } catch (err) {
     return jsonError(describeError(err));
   }
@@ -316,15 +491,28 @@ export async function handleChat(req: Request, env: ApiEnv): Promise<Response> {
   if (req.signal.aborted) upstream.abort();
   req.signal.addEventListener("abort", () => upstream.abort());
 
-  let pump: (emit: Emit) => Promise<void>;
-  try {
-    pump =
-      body.provider === "openai"
-        ? await openOpenAI(body, creds, env, upstream.signal)
-        : await openAnthropic(body, creds, env, upstream.signal);
-  } catch (err) {
-    return jsonError(describeError(err, creds.baseUrl));
+  const openModel = () =>
+    body.provider === "openai"
+      ? openOpenAI(body, creds, env, upstream.signal)
+      : openAnthropic(body, creds, env, upstream.signal, search?.mode === "native");
+
+  // 不需要先搜索时，在返回响应前就连上模型，错误可以直接以 HTTP 状态码返回；
+  // 需要先搜索时，搜索进度要通过流告诉前端，所以在流里依次完成搜索和请求模型
+  let pump: ((emit: Emit) => Promise<void>) | null = null;
+  if (search?.mode !== "service") {
+    try {
+      pump = await openModel();
+    } catch (err) {
+      return jsonError(describeError(err, creds.baseUrl));
+    }
   }
+  const run = async (emit: Emit) => {
+    if (!pump && search?.mode === "service") {
+      await applyServiceSearch(body, search, creds, env, upstream.signal, emit);
+      pump = await openModel();
+    }
+    await pump!(emit);
+  };
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
@@ -337,7 +525,7 @@ export async function handleChat(req: Request, env: ApiEnv): Promise<Response> {
         }
       };
       try {
-        await pump(emit);
+        await run(emit);
       } catch (err) {
         if (!upstream.signal.aborted) emit({ type: "error", message: describeError(err, creds.baseUrl).message });
       } finally {
@@ -383,6 +571,28 @@ export async function handleModels(req: Request, env: ApiEnv): Promise<Response>
   }
 }
 
+/** POST /api/search：测试搜索服务是否可用 */
+export async function handleSearch(req: Request, env: ApiEnv): Promise<Response> {
+  try {
+    const body = (await req.json().catch(() => null)) as { service?: string; apiKey?: string; query?: string } | null;
+    const service: SearchService = body?.service === "bocha" ? "bocha" : "tavily";
+    const plan = resolveSearch(
+      { provider: "openai", model: "-", messages: [], webSearch: { mode: "service", service, apiKey: body?.apiKey } },
+      req.headers.get("x-access-code"),
+      env,
+    ) as Extract<SearchPlan, { mode: "service" }>;
+    const hits = await webSearch(service, plan.apiKey, (body?.query || "今天的新闻").slice(0, 200), {
+      fetch: env.fetch,
+      endpoint: env.searchEndpoints?.[service],
+      signal: AbortSignal.timeout(20_000),
+    });
+    return Response.json({ results: hits.map(({ title, url, date }) => ({ title, url, date })) });
+  } catch (err) {
+    const e = describeError(err);
+    return jsonError(e.status === 500 ? new HttpError(502, e.message) : e);
+  }
+}
+
 /** GET /api/config：告诉前端服务器是否预置了 Key */
 export function handleConfig(env: ApiEnv): Response {
   const provider = (id: ProviderId) => ({
@@ -392,6 +602,7 @@ export function handleConfig(env: ApiEnv): Response {
   const config: ServerConfig = {
     accessCodeRequired: Boolean(env.accessCode),
     providers: { openai: provider("openai"), anthropic: provider("anthropic") },
+    search: { tavily: Boolean(env.searchKeys?.tavily), bocha: Boolean(env.searchKeys?.bocha) },
   };
   return Response.json(config);
 }
@@ -401,6 +612,7 @@ export async function routeApi(req: Request, env: ApiEnv): Promise<Response> {
   const { pathname } = new URL(req.url);
   if (pathname === "/api/chat" && req.method === "POST") return handleChat(req, env);
   if (pathname === "/api/models" && req.method === "POST") return handleModels(req, env);
+  if (pathname === "/api/search" && req.method === "POST") return handleSearch(req, env);
   if (pathname === "/api/config") return handleConfig(env);
   return Response.json({ error: "Not found" }, { status: 404 });
 }

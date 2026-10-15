@@ -1,10 +1,11 @@
 "use client";
 
-import { AlertCircle, Brain, Check, ChevronDown, Copy, Pencil, RefreshCw, Settings2 } from "lucide-react";
+import { AlertCircle, Brain, Check, ChevronDown, Copy, Globe, Pencil, RefreshCw, Settings2 } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import { editMessage, regenerate } from "@/lib/chat";
 import { useStore } from "@/lib/store";
-import type { Message } from "@/lib/types";
+import type { Message, Source } from "@/lib/types";
+import { TARGET } from "@/lib/platform";
 import { cn, copyText, prettyModel } from "@/lib/utils";
 import { MessageAttachments } from "./Attachments";
 import { Markdown } from "./Markdown";
@@ -60,6 +61,62 @@ function Reasoning({ text, active }: { text: string; active: boolean }) {
           {text}
         </div>
       )}
+    </div>
+  );
+}
+
+function hostname(url: string) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
+/** 搜索进度：正在搜索时显示当前关键词，完成后显示搜过哪些 */
+function SearchStatus({ searches, active }: { searches: string[]; active: boolean }) {
+  return (
+    <div className="mb-2.5 flex items-start gap-1.5 text-sm text-muted">
+      <Globe size={15} className="mt-[3px] shrink-0" />
+      <span className={cn("min-w-0 break-words", active && "text-shimmer")}>
+        {active ? `正在搜索：${searches[searches.length - 1]}` : `已搜索：${searches.join("、")}`}
+      </span>
+    </div>
+  );
+}
+
+/** 参考来源：带编号的小卡片，对应正文里的 [1]、[2] */
+function SourceList({ sources }: { sources: Source[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const shown = expanded ? sources : sources.slice(0, 6);
+  return (
+    <div className="mt-4">
+      <p className="mb-2 text-xs font-medium text-subtle">参考来源 · {sources.length}</p>
+      <div className="flex flex-wrap gap-1.5">
+        {shown.map((src, i) => (
+          <a
+            key={src.url}
+            href={src.url}
+            target={TARGET === "mobile" ? undefined : "_blank"}
+            rel="noopener noreferrer"
+            title={`${src.title}\n${src.url}`}
+            className="flex max-w-[260px] items-center gap-1.5 rounded-full border border-line py-1 pr-3 pl-1 text-xs text-muted transition-colors hover:bg-hover hover:text-fg"
+          >
+            <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-soft px-1 text-[11px] font-semibold">{i + 1}</span>
+            <span className="truncate">{src.title}</span>
+            <span className="shrink-0 text-subtle">· {hostname(src.url)}</span>
+          </a>
+        ))}
+        {sources.length > 6 && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="rounded-full border border-line px-3 py-1 text-xs text-muted transition-colors hover:bg-hover hover:text-fg"
+          >
+            {expanded ? "收起" : `还有 ${sources.length - 6} 个`}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -159,18 +216,24 @@ function AssistantMessage({ message, convId, isLast, busy }: { message: Message;
   const streaming = message.status === "streaming";
   const waiting = streaming && !message.content;
   const needsSetup = message.status === "error" && /API Key|访问密码/.test(message.error ?? "");
+  const setupTab = /联网搜索|Tavily|博查/.test(message.error ?? "") ? "search" : "models";
+  const searches = message.searches ?? [];
 
   return (
     <div className="group">
+      {searches.length > 0 && <SearchStatus searches={searches} active={streaming && !message.content} />}
+
       {message.reasoning && <Reasoning text={message.reasoning} active={streaming && !message.content} />}
 
-      {waiting && !message.reasoning && (
+      {waiting && !message.reasoning && !searches.length && (
         <div className="flex h-7 items-center gap-2">
           <span className="h-3 w-3 animate-[blink_1s_ease-in-out_infinite] rounded-full bg-fg" />
         </div>
       )}
 
-      {message.content && <Markdown content={message.content} streaming={streaming} />}
+      {message.content && <Markdown content={message.content} streaming={streaming} sources={message.sources} />}
+
+      {!!message.sources?.length && (!streaming || message.content) && <SourceList sources={message.sources} />}
 
       {message.status === "stopped" && !message.content && <p className="text-sm text-subtle">已停止生成</p>}
 
@@ -187,7 +250,7 @@ function AssistantMessage({ message, convId, isLast, busy }: { message: Message;
                 </Button>
               )}
               {needsSetup && (
-                <Button size="sm" variant="secondary" onClick={() => openSettings("models")}>
+                <Button size="sm" variant="secondary" onClick={() => openSettings(setupTab)}>
                   <Settings2 size={14} />
                   打开设置
                 </Button>

@@ -190,6 +190,29 @@ button:disabled {
 .md a:hover {
   text-decoration-color: var(--link);
 }
+/* 联网搜索的来源角标 */
+.md a.cite {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.45em;
+  height: 1.45em;
+  margin: 0 0.1em;
+  padding: 0 0.35em;
+  border-radius: 999px;
+  background: var(--bg-soft);
+  color: var(--fg-muted);
+  font-size: 0.68em;
+  font-weight: 600;
+  line-height: 1;
+  text-decoration: none;
+  vertical-align: 0.25em;
+  transition: background 0.15s, color 0.15s;
+}
+.md a.cite:hover {
+  background: var(--link);
+  color: #fff;
+}
 .md ul,
 .md ol {
   margin: 0 0 0.9em;

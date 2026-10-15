@@ -7,7 +7,7 @@ import { DEFAULT_SETTINGS, PRESET_GPTS } from "./defaults";
 import type { Conversation, GPT, Message, ModelRef, ProviderId, ServerConfig, Settings } from "./types";
 import { uid } from "./utils";
 
-export type SettingsTab = "general" | "models" | "personalization" | "data";
+export type SettingsTab = "general" | "models" | "search" | "personalization" | "data";
 
 interface Toast {
   id: string;
@@ -285,6 +285,11 @@ export const useStore = create<State>()(
                   anthropic: { ...DEFAULT_SETTINGS.providers.anthropic, ...s.providers?.anthropic },
                 },
                 customInstructions: { ...DEFAULT_SETTINGS.customInstructions, ...s.customInstructions },
+                webSearch: {
+                  ...DEFAULT_SETTINGS.webSearch,
+                  ...s.webSearch,
+                  keys: { ...DEFAULT_SETTINGS.webSearch.keys, ...s.webSearch?.keys },
+                },
               }
             : current.settings,
         };

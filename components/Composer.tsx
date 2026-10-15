@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUp, Loader2, Paperclip, Square } from "lucide-react";
+import { ArrowUp, Globe, Loader2, Paperclip, Square } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import {
   ACCEPT,
@@ -188,18 +188,21 @@ export const Composer = forwardRef<
             e.target.value = "";
           }}
         />
-        <button
-          type="button"
-          aria-label="添加图片和文件"
-          title="添加图片和文件（也可以直接粘贴或拖进来）"
-          onClick={(e) => {
-            e.stopPropagation();
-            fileInput.current?.click();
-          }}
-          className="flex h-9 w-9 items-center justify-center rounded-full text-muted transition-colors hover:bg-hover hover:text-fg"
-        >
-          <Paperclip size={19} />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            aria-label="添加图片和文件"
+            title="添加图片和文件（也可以直接粘贴或拖进来）"
+            onClick={(e) => {
+              e.stopPropagation();
+              fileInput.current?.click();
+            }}
+            className="flex h-9 w-9 items-center justify-center rounded-full text-muted transition-colors hover:bg-hover hover:text-fg"
+          >
+            <Paperclip size={19} />
+          </button>
+          <WebSearchToggle />
+        </div>
         {streaming ? (
           <button
             type="button"
@@ -235,3 +238,31 @@ export const Composer = forwardRef<
     </div>
   );
 });
+
+/** 「联网」开关：打开后每条消息都会先联网搜索再回答 */
+function WebSearchToggle() {
+  const enabled = useStore((s) => s.settings.webSearch.enabled);
+  const updateSettings = useStore((s) => s.updateSettings);
+  const toast = useStore((s) => s.toast);
+  return (
+    <button
+      type="button"
+      aria-pressed={enabled}
+      title={enabled ? "联网搜索已开启：每条消息都会先搜索再回答" : "开启联网搜索"}
+      onClick={(e) => {
+        e.stopPropagation();
+        updateSettings((s) => ({ ...s, webSearch: { ...s.webSearch, enabled: !enabled } }));
+        toast(enabled ? "已关闭联网搜索" : "已开启联网搜索");
+      }}
+      className={cn(
+        "flex h-9 items-center gap-1.5 rounded-full px-2.5 text-sm transition-colors",
+        enabled
+          ? "bg-[#3b82f6]/12 font-medium text-[#2563eb] hover:bg-[#3b82f6]/18 dark:text-[#7ab7ff]"
+          : "text-muted hover:bg-hover hover:text-fg",
+      )}
+    >
+      <Globe size={18} />
+      <span>联网</span>
+    </button>
+  );
+}

@@ -15,6 +15,7 @@ export const DEFAULT_SETTINGS: Settings = {
   customInstructions: { enabled: true, aboutUser: "", responseStyle: "" },
   autoTitle: true,
   accessCode: "",
+  webSearch: { enabled: false, claudeMode: "native", service: "tavily", keys: { tavily: "", bocha: "" } },
 };
 
 export const GPT_COLORS = ["#f87171", "#fb923c", "#f5b33c", "#34d399", "#2dd4bf", "#60a5fa", "#818cf8", "#c084fc", "#f472b6", "#94a3b8"];

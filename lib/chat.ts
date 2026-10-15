@@ -2,7 +2,18 @@
 
 import { deleteAttachments, loadPayloads, saveAttachments, type PreparedFile, type PreparedImage } from "./attachments";
 import { attachmentIds, useStore } from "./store";
-import type { ChatMessagePayload, ChatRequestBody, GPT, Message, ProviderId, Settings, StreamEvent } from "./types";
+import type {
+  ChatMessagePayload,
+  ChatRequestBody,
+  GPT,
+  Message,
+  ProviderId,
+  SearchService,
+  Settings,
+  Source,
+  StreamEvent,
+  WebSearchOptions,
+} from "./types";
 import { uid } from "./utils";
 
 export interface Attachments {
@@ -20,6 +31,14 @@ function credentials(provider: ProviderId, settings: Settings) {
     baseUrl: p.baseUrl.trim() || undefined,
     maxTokens: provider === "anthropic" ? p.maxTokens : undefined,
   };
+}
+
+/** 打开「联网」开关时，本次请求使用的搜索方式 */
+function webSearchOptions(provider: ProviderId, settings: Settings): WebSearchOptions | undefined {
+  const ws = settings.webSearch;
+  if (!ws.enabled) return undefined;
+  const mode = provider === "anthropic" && ws.claudeMode === "native" ? "native" : "service";
+  return { mode, service: ws.service, apiKey: ws.keys[ws.service].trim() || undefined };
 }
 
 /** 调用 /api/chat 并逐行解析 NDJSON 流 */
@@ -214,10 +233,17 @@ async function generate(convId: string) {
   // 增量先攒在本地，每 40ms 合并写一次 store，避免每个 token 都触发渲染
   let content = "";
   let reasoning = "";
+  const searches: string[] = [];
+  const sources: Source[] = [];
+  const extra = () => ({
+    reasoning: reasoning || undefined,
+    searches: searches.length ? [...searches] : undefined,
+    sources: sources.length ? [...sources] : undefined,
+  });
   let timer: ReturnType<typeof setTimeout> | null = null;
   const flush = () => {
     timer = null;
-    useStore.getState().patchMessage(convId, assistant.id, { content, reasoning: reasoning || undefined });
+    useStore.getState().patchMessage(convId, assistant.id, { content, ...extra() });
   };
   const schedule = () => {
     if (!timer) timer = setTimeout(flush, 40);
@@ -226,12 +252,21 @@ async function generate(convId: string) {
   let ok = false;
   try {
     await streamChat(
-      { provider, model, system: buildSystem(gpt, s.settings), messages: history, ...credentials(provider, s.settings) },
+      {
+        provider,
+        model,
+        system: buildSystem(gpt, s.settings),
+        messages: history,
+        ...credentials(provider, s.settings),
+        webSearch: webSearchOptions(provider, s.settings),
+      },
       controller.signal,
       (event) => {
         if (event.type === "text") content += event.text;
         else if (event.type === "reasoning") reasoning += event.text;
         else if (event.type === "reset") content = reasoning = "";
+        else if (event.type === "search") searches.push(event.query);
+        else if (event.type === "sources") sources.push(...event.sources);
         schedule();
       },
     );
@@ -244,21 +279,12 @@ async function generate(convId: string) {
       if (withImages && !/API Key|访问密码|网络|连接/.test(error)) {
         error += "\n\n提示：如果当前模型不支持图片，请换一个支持识图的模型（例如 Claude、GPT-5.5、通义千问 VL）。";
       }
-      useStore.getState().patchMessage(convId, assistant.id, {
-        content,
-        reasoning: reasoning || undefined,
-        status: "error",
-        error,
-      });
+      useStore.getState().patchMessage(convId, assistant.id, { content, ...extra(), status: "error", error });
     }
   } finally {
     if (timer) clearTimeout(timer);
     if (ok || controller.signal.aborted) {
-      useStore.getState().patchMessage(convId, assistant.id, {
-        content,
-        reasoning: reasoning || undefined,
-        status: ok ? "done" : "stopped",
-      });
+      useStore.getState().patchMessage(convId, assistant.id, { content, ...extra(), status: ok ? "done" : "stopped" });
     }
     if (controllers.get(convId) === controller) {
       controllers.delete(convId);
@@ -331,4 +357,18 @@ export async function fetchModels(provider: ProviderId): Promise<string[]> {
   const data = (await res.json().catch(() => null)) as { models?: string[]; error?: string } | null;
   if (!res.ok || !data?.models) throw new Error(data?.error ?? `获取失败（${res.status}）`);
   return data.models;
+}
+
+/** 设置页里的「测试搜索」 */
+export async function testSearch(service: SearchService): Promise<Source[]> {
+  const { settings } = useStore.getState();
+  const accessCode = settings.accessCode.trim();
+  const res = await fetch("/api/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(accessCode ? { "x-access-code": accessCode } : {}) },
+    body: JSON.stringify({ service, apiKey: settings.webSearch.keys[service].trim() || undefined, query: "今天的科技新闻" }),
+  });
+  const data = (await res.json().catch(() => null)) as { results?: Source[]; error?: string } | null;
+  if (!res.ok || !data?.results) throw new Error(data?.error ?? `搜索失败（${res.status}）`);
+  return data.results;
 }

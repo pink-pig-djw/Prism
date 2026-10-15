@@ -29,12 +29,24 @@ export interface FileRef {
   truncated?: boolean;
 }
 
+/** 联网搜索得到的参考来源 */
+export interface Source {
+  title: string;
+  url: string;
+  date?: string;
+}
+
+export type SearchService = "tavily" | "bocha";
+
 export interface Message {
   id: string;
   role: Role;
   content: string;
   images?: ImageRef[];
   files?: FileRef[];
+  /** 联网搜索：本条回答搜索过的关键词和参考来源 */
+  searches?: string[];
+  sources?: Source[];
   /** 模型的思考过程（DeepSeek reasoning_content / Claude thinking） */
   reasoning?: string;
   /** 生成这条回答所用的模型 */
@@ -90,6 +102,14 @@ export interface Settings {
   };
   autoTitle: boolean;
   accessCode: string;
+  webSearch: {
+    /** 输入框上的「联网」开关 */
+    enabled: boolean;
+    /** Claude 使用自带搜索（native）还是通用搜索服务（service） */
+    claudeMode: "native" | "service";
+    service: SearchService;
+    keys: Record<SearchService, string>;
+  };
 }
 
 /** /api/chat 返回的 NDJSON 流中的一行 */
@@ -99,6 +119,10 @@ export type StreamEvent =
   /** 模型中途切换（Claude 安全拒答后自动降级），之前输出的内容作废 */
   | { type: "reset" }
   | { type: "error"; message: string }
+  /** 正在联网搜索某个关键词 */
+  | { type: "search"; query: string }
+  /** 新增的参考来源（编号依次递增） */
+  | { type: "sources"; sources: Source[] }
   | { type: "done"; stopReason?: string | null };
 
 /** 发送给模型的图片：base64 数据（不含 data: 前缀） */
@@ -130,9 +154,20 @@ export interface ChatRequestBody {
   apiKey?: string;
   baseUrl?: string;
   maxTokens?: number;
+  /** 打开「联网」开关时附带 */
+  webSearch?: WebSearchOptions;
+}
+
+export interface WebSearchOptions {
+  /** native：Claude 自带搜索；service：先用搜索服务搜索，再把结果交给模型 */
+  mode: "native" | "service";
+  service: SearchService;
+  apiKey?: string;
 }
 
 export interface ServerConfig {
   accessCodeRequired: boolean;
+  /** 服务器是否预置了搜索服务的 Key */
+  search?: Record<SearchService, boolean>;
   providers: Record<ProviderId, { serverKey: boolean; models: string[] }>;
 }

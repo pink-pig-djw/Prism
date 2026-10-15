@@ -9,6 +9,9 @@
   - Claude 直接阅读 PDF 原文（包括图表和排版）；OpenAI 兼容接口会先在本地提取 PDF 文字再发送，所以不支持文件输入的模型也能用
   - 大图会自动压缩到长边 1568px；GBK 编码的中文文本文件也能正确识别
   - 看图需要模型本身支持识图（例如 Claude、GPT-5.5、通义千问 VL）；纯文本模型（例如 deepseek-chat）可以读文件但不能看图
+- 🌐 **联网搜索**：点输入框上的「联网」打开后，每条消息都会先搜索再回答，正文里用 ①② 角标标注来源，回答下方列出参考链接
+  - Claude（官方接口）默认使用 Anthropic 自带的搜索，由模型自己决定搜什么、搜几次，不用额外申请 Key，搜索按次另外计费
+  - DeepSeek、GPT 等其他模型使用通用搜索服务：[Tavily](https://tavily.com)（海外，每月有免费额度）或 [博查](https://open.bochaai.com)（国内，中文结果更好），在「设置 → 联网搜索」填入对应的 API Key 即可；追问（例如「那明天呢？」）会先由模型改写成完整的搜索词
 - 🧠 **思考过程**：DeepSeek / 通义千问等推理模型的思考内容可折叠查看
 - ✏️ **编辑与重新生成**：修改已发送的问题重新提问，或重新生成最后一条回答
 - 🗂️ **会话管理**：按时间分组的历史记录、自动生成标题、重命名、置顶、删除、全文搜索（Ctrl/⌘ + K）
@@ -84,6 +87,7 @@ npm start          # 默认端口 3000，可用 -p 指定
 | --- | --- |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODELS` | OpenAI 兼容接口的 Key、地址和模型列表（逗号分隔） |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_MODELS` | Anthropic 的 Key、地址和模型列表 |
+| `TAVILY_API_KEY` / `BOCHA_API_KEY` | 联网搜索服务的 Key（可选），配置后访问者不用自己填 |
 | `ACCESS_CODE` | 访问密码。部署到公网并配置了服务器 Key 时**强烈建议设置**，否则任何人都能消耗你的额度 |
 
 使用服务器 Key 时会忽略网页端填写的接口地址，避免 Key 被发往第三方。
@@ -138,6 +142,7 @@ app/api/                网页版的服务端路由（转发给 lib/api/core.ts�
 components/             界面组件（侧边栏、聊天、输入框、设置、GPT 编辑器…）
 lib/
   api/core.ts           调用 OpenAI / Anthropic 的核心逻辑（三端共用）
+  api/search.ts         通用搜索服务（Tavily / 博查）
   attachments.ts        图片压缩、PDF / Word / 文本提取、附件本地存储
   native/               安卓版：页面内的 /api 处理、返回键、导出文件
   chat.ts               前端发送、停止、编辑、重新生成、自动标题

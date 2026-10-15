@@ -1,9 +1,9 @@
 "use client";
 
-import { Check, Database, Download, Eye, EyeOff, Loader2, Plug, RefreshCw, Settings2, Trash2, Upload, UserRound, X } from "lucide-react";
+import { Check, Database, Download, Eye, EyeOff, Globe, Loader2, Plug, RefreshCw, Search, Settings2, Trash2, Upload, UserRound, X } from "lucide-react";
 import { useRef, useState } from "react";
 import { exportAttachments, importAttachments } from "@/lib/attachments";
-import { fetchModels } from "@/lib/chat";
+import { fetchModels, testSearch } from "@/lib/chat";
 import { DEFAULT_MODELS } from "@/lib/defaults";
 import { attachmentIds, useStore, type SettingsTab } from "@/lib/store";
 import type { ProviderId } from "@/lib/types";
@@ -14,6 +14,7 @@ import { Button, Dialog, Field, inputClass, Switch } from "./ui";
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: "general", label: "常规", icon: <Settings2 size={16} /> },
   { id: "models", label: "模型服务", icon: <Plug size={16} /> },
+  { id: "search", label: "联网搜索", icon: <Globe size={16} /> },
   { id: "personalization", label: "个性化", icon: <UserRound size={16} /> },
   { id: "data", label: "数据管理", icon: <Database size={16} /> },
 ];
@@ -268,6 +269,142 @@ function Models() {
   );
 }
 
+const SERVICES = [
+  { id: "tavily", name: "Tavily", desc: "海外搜索服务，每月有免费额度", signup: "https://tavily.com", placeholder: "tvly-..." },
+  { id: "bocha", name: "博查", desc: "国内搜索服务，中文结果更好", signup: "https://open.bochaai.com", placeholder: "sk-..." },
+] as const;
+
+function WebSearchSettings() {
+  const ws = useStore((s) => s.settings.webSearch);
+  const serverSearch = useStore((s) => s.serverConfig?.search);
+  const update = useStore((s) => s.updateSettings);
+  const set = (patch: Partial<typeof ws>) => update((s) => ({ ...s, webSearch: { ...s.webSearch, ...patch } }));
+  const [testing, setTesting] = useState(false);
+  const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
+  const service = SERVICES.find((x) => x.id === ws.service)!;
+  const hasServerKey = Boolean(serverSearch?.[ws.service]);
+  const ready = Boolean(ws.keys[ws.service].trim()) || hasServerKey;
+
+  return (
+    <div className="space-y-5 py-4">
+      <p className="rounded-xl bg-soft px-3.5 py-2.5 text-xs leading-relaxed text-muted">
+        🌐 在输入框点「联网」打开后，每条消息都会先联网搜索再回答，并在回答里标注参考来源。
+      </p>
+      <Row title="开启联网搜索" desc="和输入框上的「联网」按钮是同一个开关。">
+        <Switch checked={ws.enabled} onChange={(v) => set({ enabled: v })} />
+      </Row>
+
+      <div>
+        <p className="mb-1.5 text-[13px] font-medium">Claude 模型使用</p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {(
+            [
+              ["native", "Claude 自带搜索", "不用额外申请 Key，由 Claude 自己决定搜什么、搜几次；需要官方接口（或支持搜索的中转），搜索按次另外计费"],
+              ["service", "通用搜索服务", "和其他模型一样，使用下面配置的搜索服务"],
+            ] as const
+          ).map(([value, title, desc]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => set({ claudeMode: value })}
+              className={cn(
+                "rounded-2xl border p-3.5 text-left transition-colors",
+                ws.claudeMode === value ? "border-[#3b82f6] bg-[#3b82f6]/6" : "border-line hover:bg-hover",
+              )}
+            >
+              <span className="block text-sm font-medium">{title}</span>
+              <span className="mt-1 block text-xs leading-relaxed text-subtle">{desc}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <section className="rounded-2xl border border-line p-4 sm:p-5">
+        <div className="mb-4 flex items-center justify-between gap-2">
+          <div>
+            <h3 className="font-semibold">通用搜索服务</h3>
+            <p className="mt-0.5 text-xs text-subtle">DeepSeek、GPT 等 OpenAI 兼容接口的模型联网时使用</p>
+          </div>
+          <span
+            className={cn(
+              "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs",
+              ready ? "bg-[#10a37f]/12 text-[#0d8a6a] dark:text-[#4ade80]" : "bg-soft text-subtle",
+            )}
+          >
+            <span className={cn("h-1.5 w-1.5 rounded-full", ready ? "bg-[#10a37f]" : "bg-subtle")} />
+            {ws.keys[ws.service].trim() ? "已填写 Key" : hasServerKey ? "使用服务器 Key" : "未配置"}
+          </span>
+        </div>
+        <div className="mb-4 grid grid-cols-2 gap-2">
+          {SERVICES.map((sv) => (
+            <button
+              key={sv.id}
+              type="button"
+              onClick={() => {
+                set({ service: sv.id });
+                setStatus(null);
+              }}
+              className={cn(
+                "rounded-xl border px-3 py-2.5 text-left transition-colors",
+                ws.service === sv.id ? "border-[#3b82f6] bg-[#3b82f6]/6" : "border-line hover:bg-hover",
+              )}
+            >
+              <span className="block text-sm font-medium">{sv.name}</span>
+              <span className="block text-xs text-subtle">{sv.desc}</span>
+            </button>
+          ))}
+        </div>
+        <Field
+          label={`${service.name} API Key`}
+          hint={
+            <>
+              在{" "}
+              <a href={service.signup} target="_blank" rel="noopener noreferrer" className="text-[var(--link)] underline underline-offset-2">
+                {service.signup.replace("https://", "")}
+              </a>{" "}
+              注册后获取。{hasServerKey && !ws.keys[ws.service] ? "服务器已配置 Key，可以留空。" : ""}
+            </>
+          }
+        >
+          <SecretInput
+            value={ws.keys[ws.service]}
+            placeholder={service.placeholder}
+            onChange={(v) => set({ keys: { ...ws.keys, [ws.service]: v } })}
+          />
+        </Field>
+        <div className="mt-3 flex items-center gap-3">
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={testing || !ready}
+            onClick={async () => {
+              setTesting(true);
+              setStatus(null);
+              try {
+                const results = await testSearch(ws.service);
+                setStatus({ ok: true, text: `搜索成功，返回 ${results.length} 条结果${results[0] ? `，例如「${results[0].title}」` : ""}` });
+              } catch (err) {
+                setStatus({ ok: false, text: err instanceof Error ? err.message : String(err) });
+              } finally {
+                setTesting(false);
+              }
+            }}
+          >
+            {testing ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
+            测试搜索
+          </Button>
+        </div>
+        {status && (
+          <p className={cn("mt-2 flex items-start gap-1.5 text-xs leading-relaxed", status.ok ? "text-[#0d8a6a] dark:text-[#4ade80]" : "text-danger")}>
+            {status.ok ? <Check size={14} className="mt-px shrink-0" /> : <X size={14} className="mt-px shrink-0" />}
+            <span className="break-all">{status.text}</span>
+          </p>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function Personalization() {
   const ci = useStore((s) => s.settings.customInstructions);
   const update = useStore((s) => s.updateSettings);
@@ -418,6 +555,7 @@ export function SettingsDialog() {
         <div className="scroll-thin min-h-0 min-w-0 flex-1 overflow-y-auto px-5 sm:px-6">
           {tab === "general" && <General />}
           {tab === "models" && <Models />}
+          {tab === "search" && <WebSearchSettings />}
           {tab === "personalization" && <Personalization />}
           {tab === "data" && <Data />}
         </div>
